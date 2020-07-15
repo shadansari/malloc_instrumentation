@@ -14,20 +14,19 @@ static void* (*real_calloc)(size_t nmemb, size_t size);
 static void* (*real_realloc)(void *ptr, size_t size);
 static void  (*real_free)(void *ptr);
 
-static void* (*temp_malloc)(size_t size);
-static void* (*temp_calloc)(size_t nmemb, size_t size);
-static void* (*temp_realloc)(void *ptr, size_t size);
-static void  (*temp_free)(void *ptr);
-
 __thread unsigned int entered = 0;
 
 int start_call() {
-  return __sync_fetch_and_add(&entered, 1);
+    unsigned int t = entered;
+    entered++;
+    return t;
 }
 
 void end_call() {
-  __sync_fetch_and_sub(&entered, 1);
+    entered--;
 }
+
+static int alloc_init_pending = 0;
 
 char tmpbuf[1024];
 unsigned long tmppos = 0;
@@ -302,8 +301,8 @@ static inline void do_stats(void* ptr, size_t size, void* realloc_orig_ptr) {
     }
 }
 
-void __attribute__((constructor)) init() {
-    start_call();
+static void init() {
+    alloc_init_pending = 1;
 
     if (pthread_mutex_init(&lock, NULL) != 0) {
         fprintf(stderr, "ERROR: failed to load __FILE__\n");
@@ -314,28 +313,18 @@ void __attribute__((constructor)) init() {
     last_timestamp = (unsigned long)time(NULL);
     report_timestamp = (unsigned long)time(NULL);
 
-    real_malloc         = dummy_malloc;
-    real_calloc         = dummy_calloc;
-    real_realloc        = NULL;
-    real_free           = dummy_free;
+    real_malloc         = dlsym(RTLD_NEXT, "malloc");
+    real_calloc         = dlsym(RTLD_NEXT, "calloc");
+    real_realloc        = dlsym(RTLD_NEXT, "realloc");
+    real_free           = dlsym(RTLD_NEXT, "free");
 
-    temp_malloc         = dlsym(RTLD_NEXT, "malloc");
-    temp_calloc         = dlsym(RTLD_NEXT, "calloc");
-    temp_realloc        = dlsym(RTLD_NEXT, "realloc");
-    temp_free           = dlsym(RTLD_NEXT, "free");
-
-    if (!temp_malloc || !temp_calloc || !temp_realloc || !temp_free)
+    if (!real_malloc || !real_calloc || !real_realloc || !real_free)
     {
         fprintf(stderr, "Error in `dlsym`: %s\n", dlerror());
         exit(1);
     }
 
-    real_malloc         = temp_malloc;
-    real_calloc         = temp_calloc;
-    real_realloc        = temp_realloc;
-    real_free           = temp_free;
-
-    end_call();
+    alloc_init_pending = 0;
 }
 
 void __attribute__ ((destructor)) finish() {
@@ -345,8 +334,17 @@ void __attribute__ ((destructor)) finish() {
 }
 
 void* malloc(size_t size) {
+    void *ptr = NULL;
     int internal = start_call();
-    void* ptr = real_malloc(size);
+    if (alloc_init_pending) {
+        //fputs("alloc.so: malloc internal\n", stderr);
+        ptr = dummy_malloc(size);
+    } else {
+        if (!real_malloc) {
+            init();
+        }
+        ptr = real_malloc(size);
+    }
     if (!internal && ptr && size) {
         pthread_mutex_lock(&lock);
         do_stats(ptr, size, NULL);
@@ -357,8 +355,17 @@ void* malloc(size_t size) {
 }
 
 void* calloc(size_t nmemb, size_t size) {
+    void *ptr = NULL;
     int internal = start_call();
-    void* ptr = real_calloc(nmemb, size);
+    if (alloc_init_pending) {
+        //fputs("alloc.so: malloc internal\n", stderr);
+        ptr = dummy_calloc(nmemb, size);
+    } else {
+        if (!real_malloc) {
+            init();
+        }
+        ptr = real_calloc(nmemb, size);
+    }
     if (!internal && ptr && size) {
         pthread_mutex_lock(&lock);
         do_stats(ptr, size, NULL);
@@ -369,21 +376,37 @@ void* calloc(size_t nmemb, size_t size) {
 }
 
 void* realloc(void *in_ptr, size_t size) {
+    void *ptr = NULL;
     int internal = start_call();
-    void* out_ptr = real_realloc(in_ptr, size);
-    if (!internal && out_ptr && size)
+    if (alloc_init_pending) {
+        //fputs("alloc.so: malloc internal\n", stderr);
+        ptr = dummy_malloc(size);
+    } else {
+        if (!real_malloc) {
+            init();
+        }
+        ptr = real_realloc(in_ptr, size);
+    }
+    if (!internal && ptr && size)
     {
         pthread_mutex_lock(&lock);
-        do_stats(out_ptr, size, in_ptr);
+        do_stats(ptr, size, in_ptr);
         pthread_mutex_unlock(&lock);
     }
     end_call();
-    return out_ptr;
+    return ptr;
 }
 
 void free(void *ptr) {
     int internal = start_call();
-    real_free(ptr);
+    if (alloc_init_pending) {
+        dummy_free(ptr);
+    } else {
+        if (!real_malloc) {
+            init();
+        }
+        real_free(ptr);
+    }
     if (!internal && ptr) {
         pthread_mutex_lock(&lock);
         do_stats(ptr, 0, NULL);
