@@ -16,11 +16,14 @@ $(SRCS:.c=.d):%.d:%.c
 
 #include $(SRCS:.c=.d)
 
-test: $(MALLOC_INSTRUMENT_LIB)
+test: test-clean $(MALLOC_INSTRUMENT_LIB)
 	cd test && $(MAKE) clean && $(MAKE)
 	LD_PRELOAD=./malloc_instrument.so ./test/malloc_test
 
+test-clean:
+	cd test && $(MAKE) clean
+
 .PHONY: test
 
-clean:
+clean: test-clean
 	-${RM} ${MALLOC_INSTRUMENT_LIB} ${OBJS} $(SRCS:.c=.d)

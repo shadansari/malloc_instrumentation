@@ -14,7 +14,7 @@ differentials
     e.g. LD_PRELOAD=./malloc_instrument.so python
 
 ## TODO
-- No support yet for reporting 'Current allocations by age'.
+- ~~No support yet for reporting 'Current allocations by age'.~~
 
 ## Testing
 - 'make test' runs a basic test case (no threading).

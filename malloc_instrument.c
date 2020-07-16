@@ -55,6 +55,11 @@ static inline void decr_curr_alloc_size(int size) {
   curr_alloc_size -= size;
 }
 
+struct timespec timer_1 = {0, 0};
+struct timespec timer_10 = {0, 0};
+struct timespec timer_100 = {0, 0};
+struct timespec timer_1000 = {0, 0};
+struct timespec last = {0, 0};
 struct timespec report_timestamp = {0, 0};
 
 void* dummy_malloc(size_t size) {
@@ -182,32 +187,48 @@ static inline int timestamp_to_index(struct timespec *timestamp) {
     }
 }
 
-static inline void update_age_bucket(struct timespec now) {
+// https://gist.github.com/diabloneo/9619917
+# define timespec_diff(a, b, result)                  \
+  do {                                                \
+    (result)->tv_sec = (a)->tv_sec - (b)->tv_sec;     \
+    (result)->tv_nsec = (a)->tv_nsec - (b)->tv_nsec;  \
+    if ((result)->tv_nsec < 0) {                      \
+      --(result)->tv_sec;                             \
+      (result)->tv_nsec += 1000000000;                \
+    }                                                 \
+  } while (0)
+
+static inline void update_age_bucket(struct timespec *now) {
 
     /*  TODO - Fix this!!! */
 
-    /*
-    unsigned long diff = now - last_timestamp;
-    if (diff < 1)
-        return;
+	struct timespec diff;
+	timespec_diff(now, &last, &diff);
+	last = *now;
 
-    if (diff > 1) {
-        age_bucket[1] += age_bucket[0];
-        age_bucket[0] = 0;
-    }
-
-    if (diff > 100) {
-        age_bucket[2] += age_bucket[1];
-        age_bucket[0] = age_bucket[1] = 0;
-    } else if (diff < 1000) {
-        age_bucket[3] += age_bucket[2] + age_bucket[1] + age_bucket[0];
-        age_bucket[0] = age_bucket[1] = age_bucket[2] = 0;
-    } else {
+	if (timer_1000.tv_sec + diff.tv_sec > 1000) {
         age_bucket[4] += age_bucket[3] + age_bucket[2] + age_bucket[1] + age_bucket[0];
         age_bucket[0] = age_bucket[1] = age_bucket[2] = age_bucket[3] = 0;
-    }
-    last_timestamp = now;
-    */
+		timer_1000.tv_sec = timer_100.tv_sec = timer_10.tv_sec = timer_1.tv_sec = 0;
+	} else if (timer_100.tv_sec + diff.tv_sec > 100) {
+        age_bucket[3] += age_bucket[2] + age_bucket[1] + age_bucket[0];
+        age_bucket[0] = age_bucket[1] = age_bucket[2] = 0;
+		timer_100.tv_sec = timer_10.tv_sec = timer_1.tv_sec = 0;
+		timer_1000.tv_sec += diff.tv_sec;
+	} else if (timer_10.tv_sec + diff.tv_sec > 10) {
+		age_bucket[2] += age_bucket[1] + age_bucket[0];
+        age_bucket[0] = age_bucket[1] = 0;
+		timer_10.tv_sec = timer_1.tv_sec = 0;
+		timer_100.tv_sec += diff.tv_sec;
+		timer_1000.tv_sec += diff.tv_sec;
+	} else if (timer_1.tv_sec + diff.tv_sec > 1) {
+        age_bucket[1] += age_bucket[0];
+        age_bucket[0] = 0;
+		timer_1.tv_sec = 0;
+		timer_10.tv_sec += diff.tv_sec;
+	} else {
+		// TODO
+	}
     return;
 }
 
@@ -283,7 +304,7 @@ static inline void do_stats(void* ptr, size_t size, void* realloc_orig_ptr) {
 
     clock_gettime(CLOCK_MONOTONIC, &now);
 
-    update_age_bucket(now);
+    update_age_bucket(&now);
 
     if (size) { /* malloc, calloc, realloc */
         if (realloc_orig_ptr) { /* realloc */
