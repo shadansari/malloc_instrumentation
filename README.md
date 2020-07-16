@@ -29,4 +29,4 @@ differentials
 - https://github.com/troydhanson/uthash
 
 ## ISSUES
-- Fix seg fault with 'LD_PRELOAD=./malloc_instrument.so find /'
+- ~~Fix seg fault with 'LD_PRELOAD=./malloc_instrument.so find /'~~

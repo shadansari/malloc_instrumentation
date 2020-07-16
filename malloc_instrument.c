@@ -55,12 +55,7 @@ static inline void decr_curr_alloc_size(int size) {
   curr_alloc_size -= size;
 }
 
-unsigned long last_timestamp = 0;
-struct timespec last_ts = { 0, 0 };
-unsigned long report_timestamp = 0;
-static inline void incr_report_timestamp(int n) {
-  report_timestamp += n;
-}
+struct timespec report_timestamp = {0, 0};
 
 void* dummy_malloc(size_t size) {
     if (tmppos + size >= sizeof(tmpbuf)) exit(1);
@@ -84,13 +79,13 @@ void dummy_free(void *ptr) {
 struct h_struct {
     void* ptr;            /* hash key */
     size_t size;
-    unsigned long timestamp;
+    struct timespec timestamp;
     UT_hash_handle hh; /* makes this structure hashable */
 };
 
 struct h_struct *h_map = NULL;
 
-static inline void h_add(void* ptr, size_t size, unsigned long now) {
+static inline void h_add(void* ptr, size_t size, struct timespec *now) {
     struct h_struct *s = (struct h_struct *)malloc(sizeof(struct h_struct));
     if (!s) {
         fprintf(stderr, "ERROR h_add() failed to malloc(%zu): %s\n", size, dlerror());
@@ -98,17 +93,19 @@ static inline void h_add(void* ptr, size_t size, unsigned long now) {
     }
     s->ptr = ptr;
     s->size = size;
-    s->timestamp = now;
+    s->timestamp.tv_sec = now->tv_sec;
+    s->timestamp.tv_nsec = now->tv_nsec;
     HASH_ADD_PTR( h_map, ptr, s );
 }
 
-static inline size_t h_delete(void* ptr, unsigned long* timestamp) {
+static inline size_t h_delete(void* ptr, struct timespec *timestamp) {
     struct h_struct *s = NULL;
     size_t size = 0;
     HASH_FIND_PTR(h_map, &ptr, s);
     if (s != NULL) {
         size = s->size;
-        *timestamp = s->timestamp;
+        timestamp->tv_sec = s->timestamp.tv_sec;
+        timestamp->tv_nsec = s->timestamp.tv_nsec;
         HASH_DEL(h_map, s);
         free(s);
     }
@@ -165,8 +162,10 @@ static inline int size_bucket_index(size_t numOfBytes)
     return NUM_SIZE_BUCKETS-1;
 }
 
-static inline int timestamp_to_index(unsigned long timestamp) {
-    unsigned long diff = (unsigned long)time(NULL) - timestamp;
+static inline int timestamp_to_index(struct timespec *timestamp) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    time_t diff = now.tv_sec - timestamp->tv_sec;
 
     /* TODO - Improve on this */
 
@@ -183,7 +182,7 @@ static inline int timestamp_to_index(unsigned long timestamp) {
     }
 }
 
-static inline void update_age_bucket(unsigned long now) {
+static inline void update_age_bucket(struct timespec now) {
 
     /*  TODO - Fix this!!! */
 
@@ -236,7 +235,7 @@ static inline char* progress_bar(unsigned long n, char *buf) {
 
 static inline void print_stats() {
 	char buf[4096];
-    char *ts = asctime(gmtime((time_t*)&report_timestamp));
+    char *ts = asctime(gmtime(&report_timestamp.tv_sec));
     ts[strlen(ts) - 1] = 0;
     fprintf(stderr, ">>>>>>>>>>>>> %s <<<<<<<<<<<\n", ts);
     fprintf(stderr, "Overall stats:\n");
@@ -259,7 +258,7 @@ static inline void print_stats() {
     fprintf(stderr, "\n\n");
 }
 
-static inline void stats_alloc(void* ptr, size_t size, unsigned long now) {
+static inline void stats_alloc(void* ptr, size_t size, struct timespec *now) {
     incr_curr_alloc_size(size);
     incr_num_curr_allocs(1);
     incr_num_overall_allocs(1);
@@ -269,18 +268,20 @@ static inline void stats_alloc(void* ptr, size_t size, unsigned long now) {
 }
 
 static inline void stats_free(void* ptr) {
-    unsigned long timestamp;
+    struct timespec timestamp;
     size_t size;
     if ((size = h_delete(ptr, &timestamp)) != 0) {
         decr_curr_alloc_size(size);
         decr_num_curr_allocs(1);
         --size_bucket[size_bucket_index(size)];
-        --age_bucket[timestamp_to_index(timestamp)];
+        --age_bucket[timestamp_to_index(&timestamp)];
     }
 }
 
 static inline void do_stats(void* ptr, size_t size, void* realloc_orig_ptr) {
-    unsigned long now = (unsigned long)time(NULL);
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
 
     update_age_bucket(now);
 
@@ -289,14 +290,15 @@ static inline void do_stats(void* ptr, size_t size, void* realloc_orig_ptr) {
             stats_free(realloc_orig_ptr);
         }
         if (size) {
-            stats_alloc(ptr, size, now);
+            stats_alloc(ptr, size, &now);
         }
     } else { /* free */
         stats_free(ptr);
     }
 
-    if ((now - report_timestamp) > REPORT_INTERVAL_SECS) {
-        report_timestamp = (unsigned long)time(NULL);
+    if ((now.tv_sec - report_timestamp.tv_sec) > REPORT_INTERVAL_SECS) {
+        report_timestamp.tv_sec = now.tv_sec;
+        report_timestamp.tv_nsec = now.tv_nsec;
         print_stats();
     }
 }
@@ -310,8 +312,7 @@ static void init() {
         return;
     }
 
-    last_timestamp = (unsigned long)time(NULL);
-    report_timestamp = (unsigned long)time(NULL);
+    clock_gettime(CLOCK_MONOTONIC, &report_timestamp);
 
     real_malloc         = dlsym(RTLD_NEXT, "malloc");
     real_calloc         = dlsym(RTLD_NEXT, "calloc");
@@ -379,7 +380,6 @@ void* realloc(void *in_ptr, size_t size) {
     void *ptr = NULL;
     int internal = start_call();
     if (alloc_init_pending) {
-        //fputs("alloc.so: malloc internal\n", stderr);
         ptr = dummy_malloc(size);
     } else {
         if (!real_malloc) {
